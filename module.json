@@ -1,6 +1,6 @@
 {
     "name": "storage",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "kernel": "^1.0",
     "solves": "storage.local",
     "type": "module",

@@ -3,13 +3,21 @@
     "description": "HKM Kernel plugin providing 'storage.local'.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["hkm-kernel", "plugin", "php", "storage.local"],
+    "keywords": [
+        "hkm-kernel",
+        "plugin",
+        "php",
+        "storage.local"
+    ],
     "require": {
         "php": ">=8.4"
     },
     "autoload": {
         "psr-4": {
             "Plugins\\Storage\\": ""
-        }
+        },
+        "files": [
+            "Support/helpers.php"
+        ]
     }
 }

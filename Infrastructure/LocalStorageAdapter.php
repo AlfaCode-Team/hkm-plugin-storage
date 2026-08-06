@@ -75,7 +75,7 @@ final class LocalStorageAdapter implements StoragePort
             throw new \RuntimeException("Storage: unable to persist file [{$relative}].");
         }
 
-        chmod($absolute, $visibility === 'public' ? 0644 : 0600);
+        $this->applyVisibility($absolute, $visibility, $relative);
 
         return $relative;
     }
@@ -122,17 +122,42 @@ final class LocalStorageAdapter implements StoragePort
             throw new \RuntimeException("Storage: unable to persist file [{$relative}].");
         }
 
-        chmod($absolute, $visibility === 'public' ? 0644 : 0600);
+        $this->applyVisibility($absolute, $visibility, $relative);
 
         return $relative;
     }
 
+    /**
+     * Read a whole object into memory.
+     *
+     * SMALL FILES ONLY. This buffers the entire object, so a large upload can
+     * exhaust the process memory limit — and since uploads are usually
+     * attacker-influenced in size, that is a denial-of-service primitive. Use
+     * readStream() for anything that is not known to be small.
+     *
+     * The cap (STORAGE_MAX_GET_BYTES, default 16 MiB) turns that failure into a
+     * clear exception instead of an OOM kill that takes the worker with it.
+     */
     public function get(string $path): string
     {
         $absolute = $this->absolute($path);
         if (!is_file($absolute)) {
             throw new \RuntimeException("Storage: file [{$path}] not found.");
         }
+
+        $limit = (int) (\function_exists('env') ? (env('STORAGE_MAX_GET_BYTES') ?: 0) : 0)
+            ?: 16 * 1024 * 1024;
+        $size  = @filesize($absolute);
+
+        if ($size !== false && $size > $limit) {
+            throw new \RuntimeException(sprintf(
+                'Storage: file [%s] is %d bytes, over the %d-byte get() limit. Use readStream().',
+                $path,
+                $size,
+                $limit,
+            ));
+        }
+
         $contents = file_get_contents($absolute);
         if ($contents === false) {
             throw new \RuntimeException("Storage: unable to read file [{$path}].");
@@ -204,7 +229,93 @@ final class LocalStorageAdapter implements StoragePort
     /** Resolve a caller path to an absolute path inside the root, or throw. */
     private function absolute(string $path): string
     {
-        return $this->root . '/' . $this->normalise($path);
+        $absolute = $this->root . '/' . $this->normalise($path);
+
+        // normalise() rejects ".." textually, which does NOT stop a SYMLINK
+        // inside the root pointing out of it: "uploads/link/secret" contains no
+        // traversal segment, yet resolves wherever the link points. Canonicalise
+        // and re-check.
+        //
+        // realpath() returns false for a path that does not exist yet — the
+        // normal case when writing — so in that case canonicalise the deepest
+        // EXISTING ancestor instead, which is what a symlink would live in.
+        $resolved = realpath($absolute);
+        if ($resolved === false) {
+            $resolved = $this->resolveExistingAncestor($absolute);
+        }
+
+        if ($resolved !== null && !$this->isInsideRoot($resolved)) {
+            throw new \RuntimeException('Storage: path escapes the storage root.');
+        }
+
+        return $absolute;
+    }
+
+    /** The canonical path of the deepest existing ancestor of $absolute, or null. */
+    private function resolveExistingAncestor(string $absolute): ?string
+    {
+        $dir = \dirname($absolute);
+
+        while ($dir !== '' && $dir !== '/' && $dir !== '.') {
+            $real = realpath($dir);
+            if ($real !== false) {
+                return $real;
+            }
+            $parent = \dirname($dir);
+            if ($parent === $dir) {
+                break;
+            }
+            $dir = $parent;
+        }
+
+        return null;
+    }
+
+    /** Canonical containment check, comparing WITH a trailing separator. */
+    private function isInsideRoot(string $resolved): bool
+    {
+        $root = realpath($this->root);
+        if ($root === false) {
+            return true; // root not created yet — nothing to escape from
+        }
+
+        // Trailing separator so "/data/storage-evil" is not read as a child of
+        // "/data/storage".
+        return $resolved === $root || str_starts_with($resolved, rtrim($root, '/') . '/');
+    }
+
+    /**
+     * Apply the requested visibility, FAILING if it could not be applied.
+     *
+     * chmod()'s return used to be discarded, so when it failed — a different
+     * owner, a filesystem without POSIX permissions, a restrictive umask on a
+     * mounted volume — the file stayed 0644 and the caller was told the private
+     * write had succeeded. A file believed private and actually world-readable
+     * is worse than a failed write.
+     */
+    private function applyVisibility(string $absolute, string $visibility, string $relative): void
+    {
+        $mode = $visibility === 'public' ? 0644 : 0600;
+
+        if (@chmod($absolute, $mode)) {
+            return;
+        }
+
+        // Verify before failing: some filesystems report false yet already have
+        // the right mode, and others cannot represent permissions at all.
+        $actual = @fileperms($absolute);
+        if ($actual !== false && ($actual & 0777) === $mode) {
+            return;
+        }
+
+        @unlink($absolute); // do not leave a file that is more permissive than requested
+
+        throw new \RuntimeException(sprintf(
+            'Storage: could not set %s permissions on [%s]. The file was removed rather than '
+            . 'left readable by others.',
+            $visibility,
+            $relative,
+        ));
     }
 
     /** Reject traversal and normalise to a clean relative path. */

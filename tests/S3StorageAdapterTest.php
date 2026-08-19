@@ -73,4 +73,97 @@ final class S3StorageAdapterTest extends TestCase
             unset($_SERVER['AWS_ACCESS_KEY_ID'], $_SERVER['AWS_SECRET_ACCESS_KEY']);
         }
     }
+
+    /**
+     * getConfig() exposes only the SDK's small 'config' sub-namespace (fips
+     * flags etc.), NOT the 'http' request options — those live on the private
+     * $defaultRequestOptions property (AwsClient::__construct: "$this->
+     * defaultRequestOptions = $config['http'];"), merged into every request.
+     * Read the same way the existing $client reflection in this file does.
+     */
+    private function defaultRequestOptionsOf(S3StorageAdapter $adapter): array
+    {
+        $ref = new \ReflectionProperty(\Aws\AwsClient::class, 'defaultRequestOptions');
+        return $ref->getValue($this->clientOf($adapter));
+    }
+
+    public function test_default_connect_and_http_timeouts_are_applied(): void
+    {
+        $adapter = S3StorageAdapter::fromConfig('bucket', 'us-east-1', 'KEY', 'SECRET');
+
+        $options = $this->defaultRequestOptionsOf($adapter);
+        $this->assertSame(10.0, (float) $options['connect_timeout']);
+        $this->assertSame(30.0, (float) $options['timeout']);
+    }
+
+    public function test_custom_timeouts_are_applied(): void
+    {
+        $adapter = S3StorageAdapter::fromConfig(
+            bucket: 'bucket',
+            region: 'us-east-1',
+            key: 'KEY',
+            secret: 'SECRET',
+            connectTimeout: 3,
+            timeout: 15,
+        );
+
+        $options = $this->defaultRequestOptionsOf($adapter);
+        $this->assertSame(3.0, (float) $options['connect_timeout']);
+        $this->assertSame(15.0, (float) $options['timeout']);
+    }
+
+    public function test_retries_are_unset_by_default_so_the_sdk_default_applies(): void
+    {
+        // No 'retries' key forced onto the client => the SDK's own
+        // RetryConfigProvider resolves it, not a value this adapter dictates.
+        $adapter = S3StorageAdapter::fromConfig('bucket', 'us-east-1', 'KEY', 'SECRET');
+
+        $config = $this->clientOf($adapter)->getConfig();
+        $this->assertArrayNotHasKey('retries', $config);
+    }
+
+    // ── store()/storeStream() maxPutBytes ──────────────────────────────────
+    // Both checks throw BEFORE the adapter reaches the network, so they are
+    // testable without a real S3 endpoint.
+
+    public function test_store_rejects_content_over_the_put_limit(): void
+    {
+        $adapter = S3StorageAdapter::fromConfig(
+            'bucket', 'us-east-1', 'KEY', 'SECRET',
+            maxPutBytes: 10,
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/over the \d+-byte store\(\) limit/');
+        $adapter->store(str_repeat('x', 11), 'f.txt');
+    }
+
+    public function test_store_stream_rejects_a_seekable_resource_over_the_put_limit(): void
+    {
+        $adapter = S3StorageAdapter::fromConfig(
+            'bucket', 'us-east-1', 'KEY', 'SECRET',
+            maxPutBytes: 10,
+        );
+
+        $resource = fopen('php://temp', 'r+b');
+        fwrite($resource, str_repeat('x', 11));
+        rewind($resource);
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessageMatches('/over the \d+-byte storeStream\(\) limit/');
+            $adapter->storeStream($resource, 'f.txt');
+        } finally {
+            fclose($resource);
+        }
+    }
+
+    public function test_store_stream_rejects_non_resource(): void
+    {
+        $adapter = S3StorageAdapter::fromConfig('bucket', 'us-east-1', 'KEY', 'SECRET');
+
+        $this->expectException(\InvalidArgumentException::class);
+        /** @phpstan-ignore-next-line intentional bad arg */
+        $adapter->storeStream('not-a-resource', 'f.txt');
+    }
 }

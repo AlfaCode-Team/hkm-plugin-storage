@@ -11,6 +11,7 @@
     ],
     "require": {
         "php": ">=8.4",
+        "ext-fileinfo": "*",
         "alfacode-team/php-service-platform": "dev-master"
     },
     "autoload": {

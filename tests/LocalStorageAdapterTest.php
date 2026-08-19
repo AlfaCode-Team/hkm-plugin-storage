@@ -24,9 +24,13 @@ final class LocalStorageAdapterTest extends TestCase
         $this->deleteTree($this->root);
     }
 
-    private function adapter(string $urlBase = '', string $secret = ''): LocalStorageAdapter
-    {
-        return new LocalStorageAdapter($this->root, $urlBase, $secret);
+    private function adapter(
+        string $urlBase = '',
+        string $secret = '',
+        int $maxGetBytes = 16 * 1024 * 1024,
+        int $maxPutBytes = 0,
+    ): LocalStorageAdapter {
+        return new LocalStorageAdapter($this->root, $urlBase, $secret, $maxGetBytes, $maxPutBytes);
     }
 
     public function test_store_writes_file_and_returns_relative_path(): void
@@ -89,6 +93,99 @@ final class LocalStorageAdapterTest extends TestCase
 
         $leftovers = glob($this->root . '/dir/.*tmp') ?: [];
         $this->assertSame([], $leftovers, 'temp files must not be left behind');
+    }
+
+    public function test_created_directories_are_not_world_accessible(): void
+    {
+        $this->adapter()->store('x', 'f.txt', 'a/b/c');
+
+        $this->assertSame('0750', substr(sprintf('%o', fileperms($this->root . '/a/b/c')), -4));
+    }
+
+    public function test_store_is_unlimited_by_default(): void
+    {
+        $this->assertSame('f.txt', $this->adapter()->store(str_repeat('x', 1000), 'f.txt'));
+    }
+
+    public function test_store_rejects_content_over_the_put_limit(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/over the \d+-byte store\(\) limit/');
+        $this->adapter(maxPutBytes: 10)->store(str_repeat('x', 11), 'f.txt');
+    }
+
+    public function test_store_accepts_content_at_the_put_limit(): void
+    {
+        $this->assertSame('f.txt', $this->adapter(maxPutBytes: 10)->store(str_repeat('x', 10), 'f.txt'));
+    }
+
+    public function test_store_stream_rejects_content_over_the_put_limit(): void
+    {
+        $resource = fopen('php://temp', 'r+b');
+        fwrite($resource, str_repeat('x', 11));
+        rewind($resource);
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessageMatches('/over the \d+-byte storeStream\(\) limit/');
+            $this->adapter(maxPutBytes: 10)->storeStream($resource, 'f.txt');
+        } finally {
+            fclose($resource);
+        }
+    }
+
+    public function test_store_stream_rejects_content_over_the_put_limit_leaves_no_temp_file(): void
+    {
+        $resource = fopen('php://temp', 'r+b');
+        fwrite($resource, str_repeat('x', 11));
+        rewind($resource);
+
+        try {
+            $this->adapter(maxPutBytes: 10)->storeStream($resource, 'f.txt');
+        } catch (\RuntimeException) {
+            // expected — assertion is below
+        } finally {
+            fclose($resource);
+        }
+
+        $this->assertFileDoesNotExist($this->root . '/f.txt');
+        $this->assertSame([], glob($this->root . '/.*tmp') ?: []);
+    }
+
+    public function test_store_stream_accepts_content_at_the_put_limit(): void
+    {
+        $resource = fopen('php://temp', 'r+b');
+        fwrite($resource, str_repeat('x', 10));
+        rewind($resource);
+
+        $path = $this->adapter(maxPutBytes: 10)->storeStream($resource, 'f.txt');
+        fclose($resource);
+
+        $this->assertSame('f.txt', $path);
+        $this->assertSame(str_repeat('x', 10), file_get_contents($this->root . '/f.txt'));
+    }
+
+    public function test_size_and_last_modified(): void
+    {
+        $adapter = $this->adapter();
+        $adapter->store('12345', 'f.txt');
+
+        $this->assertSame(5, $adapter->size('f.txt'));
+        $this->assertEqualsWithDelta(time(), $adapter->lastModified('f.txt'), 5);
+    }
+
+    public function test_size_of_missing_file_throws(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->adapter()->size('nope.txt');
+    }
+
+    public function test_mime_type_of_text_file(): void
+    {
+        $adapter = $this->adapter();
+        $adapter->store('plain text content', 'f.txt');
+
+        $this->assertSame('text/plain', $adapter->mimeType('f.txt'));
     }
 
     public function test_store_stream_writes_contents(): void

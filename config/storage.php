@@ -31,6 +31,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Read / Write Size Caps — shared by BOTH drivers
+    |--------------------------------------------------------------------------
+    | max_get_bytes  get() buffers the whole object in memory, so an unbounded
+    |                file is an OOM primitive whenever its size is attacker-
+    |                influenced. A configured 0/empty value falls back to the
+    |                16 MiB default rather than disabling the cap — use
+    |                readStream() for anything genuinely larger, never a raised
+    |                cap. Applies to BOTH LocalStorageAdapter and
+    |                S3StorageAdapter (a large S3 object is the same primitive
+    |                over a network read).
+    | max_put_bytes  store()/storeStream() bound against this many bytes so an
+    |                attacker-influenced upload size cannot fill the disk (local
+    |                driver) or run up storage cost (S3). 0 = unlimited, kept as
+    |                the default so upgrading this plugin cannot silently start
+    |                rejecting uploads an existing deployment already relies on.
+    */
+    'max_get_bytes' => (static function (): int {
+        $v = (int) (env('STORAGE_MAX_GET_BYTES') ?: 0);
+        return $v > 0 ? $v : 16 * 1024 * 1024;
+    })(),
+    'max_put_bytes' => (int) (env('STORAGE_MAX_PUT_BYTES') ?: 0),
+
+    /*
+    |--------------------------------------------------------------------------
     | Local Disk Driver
     |--------------------------------------------------------------------------
     | root       directory blobs are written under (required to enable). A RELATIVE
@@ -64,6 +88,11 @@ return [
     |                   AWS default provider chain (IAM roles) is used instead
     | endpoint          custom endpoint for non-AWS providers (Spaces/R2/MinIO)
     | use_path_style    true for MinIO / path-style endpoints
+    | connect_timeout   seconds to wait for the TCP handshake (AWS SDK default:
+    |                   none — a hung connection would block forever)
+    | timeout           seconds to wait for the whole HTTP request/response
+    | retries           left null (unset) so the AWS SDK's own retry/backoff
+    |                   provider decides — set an int to force a flat count
     */
     's3' => [
         'bucket'         => (string) (env('STORAGE_S3_BUCKET') ?: ''),
@@ -72,6 +101,18 @@ return [
         'secret'         => (string) (env('STORAGE_S3_SECRET') ?: ''),
         'endpoint'       => env('STORAGE_S3_ENDPOINT') ?: null,
         'use_path_style' => filter_var(env('STORAGE_S3_PATH_STYLE') ?: 'false', FILTER_VALIDATE_BOOL),
+        'connect_timeout' => (static function (): int {
+            $v = (int) (env('STORAGE_S3_CONNECT_TIMEOUT') ?: 0);
+            return $v > 0 ? $v : 10;
+        })(),
+        'timeout'        => (static function (): int {
+            $v = (int) (env('STORAGE_S3_TIMEOUT') ?: 0);
+            return $v > 0 ? $v : 30;
+        })(),
+        'retries'        => (static function (): ?int {
+            $v = env('STORAGE_S3_RETRIES');
+            return $v === null || $v === '' ? null : (int) $v;
+        })(),
     ],
 
 ];

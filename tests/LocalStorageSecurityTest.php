@@ -40,9 +40,9 @@ final class LocalStorageSecurityTest extends TestCase
         @rmdir(\dirname($this->root));
     }
 
-    private function adapter(): LocalStorageAdapter
+    private function adapter(int $maxGetBytes = 16 * 1024 * 1024): LocalStorageAdapter
     {
-        return new LocalStorageAdapter($this->root);
+        return new LocalStorageAdapter($this->root, maxGetBytes: $maxGetBytes);
     }
 
     // ── ST-01 ───────────────────────────────────────────────────────────────
@@ -91,32 +91,20 @@ final class LocalStorageSecurityTest extends TestCase
 
     public function test_get_refuses_a_file_over_the_limit(): void
     {
-        $_ENV['STORAGE_MAX_GET_BYTES'] = '64';
+        $path = $this->adapter()->store(str_repeat('x', 500), 'big.txt');
 
-        try {
-            $path = $this->adapter()->store(str_repeat('x', 500), 'big.txt');
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/over the \d+-byte get\(\) limit/');
 
-            $this->expectException(\RuntimeException::class);
-            $this->expectExceptionMessageMatches('/over the \d+-byte get\(\) limit/');
-
-            $this->adapter()->get($path);
-        } finally {
-            unset($_ENV['STORAGE_MAX_GET_BYTES']);
-        }
+        $this->adapter(maxGetBytes: 64)->get($path);
     }
 
     public function test_readStream_is_not_subject_to_the_get_limit(): void
     {
-        $_ENV['STORAGE_MAX_GET_BYTES'] = '64';
+        $path   = $this->adapter()->store(str_repeat('x', 500), 'big2.txt');
+        $handle = $this->adapter(maxGetBytes: 64)->readStream($path);
 
-        try {
-            $path   = $this->adapter()->store(str_repeat('x', 500), 'big2.txt');
-            $handle = $this->adapter()->readStream($path);
-
-            self::assertIsResource($handle);
-            fclose($handle);
-        } finally {
-            unset($_ENV['STORAGE_MAX_GET_BYTES']);
-        }
+        self::assertIsResource($handle);
+        fclose($handle);
     }
 }

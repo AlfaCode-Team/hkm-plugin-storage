@@ -18,15 +18,30 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\StoragePort;
  *   {base}/{path}?expires={ts}&signature={hmac}
  * which a download controller can verify with the same secret. When no secret is
  * configured the URL is returned unsigned (suitable for local/dev use only).
+ *
+ * store()/storeStream() bound their write against $maxPutBytes (0 = unlimited)
+ * so an attacker-influenced upload size cannot fill the disk; get() bounds its
+ * read the same way against $maxGetBytes. Directories are created 0750 (owner+
+ * group only) — file-level visibility already governs read access, so a 0775
+ * directory would needlessly let "other" list filenames inside it.
  */
 final class LocalStorageAdapter implements StoragePort
 {
     private readonly string $root;
 
+    /**
+     * @param int $maxGetBytes 0 falls back to a 16 MiB safety cap — get() must
+     *                         always bound its buffering, unlike uploads.
+     * @param int $maxPutBytes 0 = unlimited (backward-compatible default). Set
+     *                         to bound store()/storeStream() against filling
+     *                         the disk from attacker-influenced upload sizes.
+     */
     public function __construct(
         string $root,
         private readonly string $urlBase = '',
         private readonly string $urlSecret = '',
+        private readonly int $maxGetBytes = 16 * 1024 * 1024,
+        private readonly int $maxPutBytes = 0,
     ) {
         $resolved = rtrim($root, '/\\');
         $this->root = $resolved === '' ? '/' : $resolved;
@@ -34,11 +49,20 @@ final class LocalStorageAdapter implements StoragePort
 
     public function store(string $contents, string $filename, string $path = '', string $visibility = 'private'): string
     {
+        if ($this->maxPutBytes > 0 && strlen($contents) > $this->maxPutBytes) {
+            throw new \RuntimeException(sprintf(
+                'Storage: content for [%s] is %d bytes, over the %d-byte store() limit. Use storeStream().',
+                $filename,
+                strlen($contents),
+                $this->maxPutBytes,
+            ));
+        }
+
         $relative = $this->join($path, $filename);
         $absolute = $this->absolute($relative);
 
         $dir = dirname($absolute);
-        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        if (!is_dir($dir) && !mkdir($dir, 0750, true) && !is_dir($dir)) {
             throw new \RuntimeException("Storage: unable to create directory [{$dir}].");
         }
 
@@ -90,7 +114,7 @@ final class LocalStorageAdapter implements StoragePort
         $absolute = $this->absolute($relative);
 
         $dir = dirname($absolute);
-        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        if (!is_dir($dir) && !mkdir($dir, 0750, true) && !is_dir($dir)) {
             throw new \RuntimeException("Storage: unable to create directory [{$dir}].");
         }
 
@@ -102,8 +126,24 @@ final class LocalStorageAdapter implements StoragePort
         }
         try {
             flock($handle, LOCK_EX);
-            if (stream_copy_to_stream($resource, $handle) === false) {
+            // Cap the copy at maxPutBytes+1: a source under the limit reaches
+            // EOF before that, so $copied stays <= maxPutBytes; a source AT or
+            // OVER it copies exactly maxPutBytes+1, which the check below
+            // rejects. This bounds a stream of UNKNOWN length (e.g. a chunked
+            // upload) without ever buffering more than one byte past the cap —
+            // reject, never silently truncate.
+            $copied = $this->maxPutBytes > 0
+                ? stream_copy_to_stream($resource, $handle, $this->maxPutBytes + 1)
+                : stream_copy_to_stream($resource, $handle);
+            if ($copied === false) {
                 throw new \RuntimeException("Storage: failed to stream file [{$relative}] (disk full?).");
+            }
+            if ($this->maxPutBytes > 0 && $copied > $this->maxPutBytes) {
+                throw new \RuntimeException(sprintf(
+                    'Storage: stream for [%s] is over the %d-byte storeStream() limit.',
+                    $relative,
+                    $this->maxPutBytes,
+                ));
             }
             fflush($handle);
             if (function_exists('fsync')) {
@@ -145,16 +185,14 @@ final class LocalStorageAdapter implements StoragePort
             throw new \RuntimeException("Storage: file [{$path}] not found.");
         }
 
-        $limit = (int) (\function_exists('env') ? (env('STORAGE_MAX_GET_BYTES') ?: 0) : 0)
-            ?: 16 * 1024 * 1024;
-        $size  = @filesize($absolute);
+        $size = @filesize($absolute);
 
-        if ($size !== false && $size > $limit) {
+        if ($size !== false && $size > $this->maxGetBytes) {
             throw new \RuntimeException(sprintf(
                 'Storage: file [%s] is %d bytes, over the %d-byte get() limit. Use readStream().',
                 $path,
                 $size,
-                $limit,
+                $this->maxGetBytes,
             ));
         }
 
@@ -197,6 +235,59 @@ final class LocalStorageAdapter implements StoragePort
     public function exists(string $path): bool
     {
         return is_file($this->absolute($path));
+    }
+
+    /**
+     * Byte size of a stored object without reading it — lets a caller decide
+     * get() vs readStream() before touching file contents.
+     *
+     * Adapter-native extra: not part of StoragePort, so a caller depending on
+     * the port alone cannot use it. Fine for code that already knows it is
+     * talking to the local driver (an admin CLI, a cleanup job); a Service
+     * behind the port must not narrow to this concrete class.
+     */
+    public function size(string $path): int
+    {
+        $absolute = $this->absolute($path);
+        $size     = @filesize($absolute);
+        if ($size === false) {
+            throw new \RuntimeException("Storage: file [{$path}] not found.");
+        }
+        return $size;
+    }
+
+    /** @see size() — same adapter-native-extra caveat applies. */
+    public function lastModified(string $path): int
+    {
+        $absolute = $this->absolute($path);
+        $time     = @filemtime($absolute);
+        if ($time === false) {
+            throw new \RuntimeException("Storage: file [{$path}] not found.");
+        }
+        return $time;
+    }
+
+    /** @see size() — same adapter-native-extra caveat applies. */
+    public function mimeType(string $path): string
+    {
+        $absolute = $this->absolute($path);
+        if (!is_file($absolute)) {
+            throw new \RuntimeException("Storage: file [{$path}] not found.");
+        }
+
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        if ($finfo === false) {
+            throw new \RuntimeException('Storage: unable to initialise fileinfo.');
+        }
+        try {
+            $mime = finfo_file($finfo, $absolute);
+        } finally {
+            finfo_close($finfo);
+        }
+        if ($mime === false) {
+            throw new \RuntimeException("Storage: unable to determine mime type of [{$path}].");
+        }
+        return $mime;
     }
 
     public function delete(string $path): bool

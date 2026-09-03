@@ -1,6 +1,6 @@
 {
     "name": "storage",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "kernel": "^1.0",
     "solves": "storage.local",
     "type": "module",
@@ -13,15 +13,20 @@
     "listens": [],
 
     "config": [
-        { "key": "STORAGE_DRIVER",       "type": "string", "required": false },
-        { "key": "STORAGE_ROOT",         "type": "string", "required": false },
-        { "key": "STORAGE_URL_BASE",     "type": "string", "required": false },
-        { "key": "STORAGE_URL_SECRET",   "type": "string", "required": false },
-        { "key": "STORAGE_S3_BUCKET",    "type": "string", "required": false },
-        { "key": "STORAGE_S3_REGION",    "type": "string", "required": false },
-        { "key": "STORAGE_S3_KEY",       "type": "string", "required": false },
-        { "key": "STORAGE_S3_SECRET",    "type": "string", "required": false },
-        { "key": "STORAGE_S3_ENDPOINT",  "type": "string", "required": false },
-        { "key": "STORAGE_S3_PATH_STYLE","type": "bool",   "required": false }
+        { "key": "STORAGE_DRIVER",             "type": "string", "required": false },
+        { "key": "STORAGE_ROOT",               "type": "string", "required": false },
+        { "key": "STORAGE_URL_BASE",           "type": "string", "required": false },
+        { "key": "STORAGE_URL_SECRET",         "type": "string", "required": false },
+        { "key": "STORAGE_MAX_GET_BYTES",      "type": "int",    "required": false, "default": 16777216 },
+        { "key": "STORAGE_MAX_PUT_BYTES",      "type": "int",    "required": false },
+        { "key": "STORAGE_S3_BUCKET",          "type": "string", "required": false },
+        { "key": "STORAGE_S3_REGION",          "type": "string", "required": false },
+        { "key": "STORAGE_S3_KEY",             "type": "string", "required": false },
+        { "key": "STORAGE_S3_SECRET",          "type": "string", "required": false },
+        { "key": "STORAGE_S3_ENDPOINT",        "type": "string", "required": false },
+        { "key": "STORAGE_S3_PATH_STYLE",      "type": "bool",   "required": false },
+        { "key": "STORAGE_S3_CONNECT_TIMEOUT", "type": "int",    "required": false, "default": 10 },
+        { "key": "STORAGE_S3_TIMEOUT",         "type": "int",    "required": false, "default": 30 },
+        { "key": "STORAGE_S3_RETRIES",         "type": "int",    "required": false }
     ]
 }

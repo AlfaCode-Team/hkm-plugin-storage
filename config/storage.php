@@ -93,6 +93,14 @@ return [
     | timeout           seconds to wait for the whole HTTP request/response
     | retries           left null (unset) so the AWS SDK's own retry/backoff
     |                   provider decides — set an int to force a flat count
+    | send_acl          true (default) sends the object ACL on every write.
+    |                   Set STORAGE_S3_ACL=false for providers without object
+    |                   ACLs (MEGA S4): the header is dropped and access is
+    |                   whatever the bucket grants
+    | checksum          'when_supported' | 'when_required' for the SDK's request
+    |                   checksum calculation and response validation. Unset keeps
+    |                   the SDK default (when_supported); providers that reject
+    |                   x-amz-checksum-* on PutObject (MEGA S4) need when_required
     */
     's3' => [
         'bucket'         => (string) (env('STORAGE_S3_BUCKET') ?: ''),
@@ -112,6 +120,16 @@ return [
         'retries'        => (static function (): ?int {
             $v = env('STORAGE_S3_RETRIES');
             return $v === null || $v === '' ? null : (int) $v;
+        })(),
+        // Parsed rather than `?: 'true'`: a false value must not fall through to
+        // the default, whether env() hands it back as a string or a bool.
+        'send_acl'       => (static function (): bool {
+            $v = env('STORAGE_S3_ACL');
+            return $v === null || $v === '' ? true : filter_var($v, FILTER_VALIDATE_BOOL);
+        })(),
+        'checksum'       => (static function (): ?string {
+            $v = strtolower(trim((string) (env('STORAGE_S3_CHECKSUM') ?? '')));
+            return $v === '' ? null : $v;
         })(),
     ],
 

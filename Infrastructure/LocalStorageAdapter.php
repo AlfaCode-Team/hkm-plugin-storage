@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Plugins\Storage\Infrastructure;
 
+use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\RangeReadableStorage;
 use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\StoragePort;
 
 /**
@@ -25,7 +26,7 @@ use AlfacodeTeam\PhpServicePlatform\Kernel\Ports\StoragePort;
  * group only) — file-level visibility already governs read access, so a 0775
  * directory would needlessly let "other" list filenames inside it.
  */
-final class LocalStorageAdapter implements StoragePort
+final class LocalStorageAdapter implements StoragePort, RangeReadableStorage
 {
     private readonly string $root;
 
@@ -216,6 +217,28 @@ final class LocalStorageAdapter implements StoragePort
         return $handle;
     }
 
+    /**
+     * A file handle seeked to $offset. It continues to EOF — the contract lets
+     * the caller bound the read, so no copy of the range is made here.
+     */
+    public function readRange(string $path, int $offset, ?int $length = null)
+    {
+        if ($offset < 0) {
+            throw new \InvalidArgumentException('Storage: readRange offset must not be negative.');
+        }
+        if ($length !== null && $length < 1) {
+            throw new \InvalidArgumentException('Storage: readRange length must be at least 1.');
+        }
+
+        $handle = $this->readStream($path);
+        if ($offset > 0 && fseek($handle, $offset) !== 0) {
+            fclose($handle);
+            throw new \RuntimeException("Storage: unable to seek to byte {$offset} of [{$path}].");
+        }
+
+        return $handle;
+    }
+
     public function temporaryUrl(string $path, int $expiresInSeconds = 3600): string
     {
         $relative = $this->normalise($path);
@@ -239,12 +262,7 @@ final class LocalStorageAdapter implements StoragePort
 
     /**
      * Byte size of a stored object without reading it — lets a caller decide
-     * get() vs readStream() before touching file contents.
-     *
-     * Adapter-native extra: not part of StoragePort, so a caller depending on
-     * the port alone cannot use it. Fine for code that already knows it is
-     * talking to the local driver (an admin CLI, a cleanup job); a Service
-     * behind the port must not narrow to this concrete class.
+     * get() vs readStream() before touching file contents, or answer `Range`.
      */
     public function size(string $path): int
     {
@@ -256,7 +274,12 @@ final class LocalStorageAdapter implements StoragePort
         return $size;
     }
 
-    /** @see size() — same adapter-native-extra caveat applies. */
+    /**
+     * Adapter-native extra: not part of StoragePort, so a caller depending on
+     * the port alone cannot use it. Fine for code that already knows it is
+     * talking to the local driver (an admin CLI, a cleanup job); a Service
+     * behind the port must not narrow to this concrete class.
+     */
     public function lastModified(string $path): int
     {
         $absolute = $this->absolute($path);
@@ -267,7 +290,7 @@ final class LocalStorageAdapter implements StoragePort
         return $time;
     }
 
-    /** @see size() — same adapter-native-extra caveat applies. */
+    /** @see lastModified() — same adapter-native-extra caveat applies. */
     public function mimeType(string $path): string
     {
         $absolute = $this->absolute($path);

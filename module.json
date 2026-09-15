@@ -1,7 +1,7 @@
 {
     "name": "storage",
-    "version": "1.1.2",
-    "kernel": "^1.13.1",
+    "version": "1.2.0",
+    "kernel": "^1.16.0",
     "solves": "storage.local",
     "type": "module",
 
@@ -27,6 +27,8 @@
         { "key": "STORAGE_S3_PATH_STYLE",      "type": "bool",   "required": false },
         { "key": "STORAGE_S3_CONNECT_TIMEOUT", "type": "int",    "required": false, "default": 10 },
         { "key": "STORAGE_S3_TIMEOUT",         "type": "int",    "required": false, "default": 30 },
-        { "key": "STORAGE_S3_RETRIES",         "type": "int",    "required": false }
+        { "key": "STORAGE_S3_RETRIES",         "type": "int",    "required": false },
+        { "key": "STORAGE_S3_ACL",             "type": "bool",   "required": false },
+        { "key": "STORAGE_S3_CHECKSUM",        "type": "string", "required": false }
     ]
 }
